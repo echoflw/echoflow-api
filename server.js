@@ -1,3 +1,4 @@
+// server.js — Echo Flow (CommonJS, minimal & stable)
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -9,15 +10,20 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
+
+// --- SendGrid (email) ---
 if (process.env.SENDGRID_API_KEY) {
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 }
 
+// --- Twilio (sms) ---
 const twilioClient =
   process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
     ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
     : null;
-const TOKENS_PATH = "/data/tokens.google.json"; 
+
+// --- Google OAuth / Calendar ---
+const TOKENS_PATH = "/data/tokens.google.json"; // writable on Render
 
 function getOAuth() {
   return new google.auth.OAuth2(
@@ -35,8 +41,10 @@ function saveTokens(tokens) {
   fs.mkdirSync(path.dirname(TOKENS_PATH), { recursive: true });
   fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2));
 }
+
+// --- Helpers ---
 const e164 = (p) =>
-  String(p).startsWith("+") ? String(p) : `+1${String(p).replace(/\D/g, "")}`;
+  String(p).startsWith("+") ? String(p) : `+1${String(p).replace(/\\D/g, "")}`;
 
 function buildICS({ uid, start, end, title, location, description }) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -47,24 +55,30 @@ function buildICS({ uid, start, end, title, location, description }) {
       d.getUTCSeconds()
     )}Z`;
   const esc = (s) =>
-    String(s).replace(/([,;])/g, "\\$1").replace(/\n/g, "\\n");
+    String(s).replace(/([,;])/g, "\\$1").replace(/\\n/g, "\\n");
 
-  return `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Echo Flow//EN
-METHOD:REQUEST
-BEGIN:VEVENT
-UID:${uid}
-DTSTAMP:${toIcs(new Date())}
-DTSTART:${toIcs(start)}
-DTEND:${toIcs(end)}
-SUMMARY:${esc(title)}
-LOCATION:${esc(location)}
-DESCRIPTION:${esc(description)}
-END:VEVENT
-END:VCALENDAR`;
+  return (
+    "BEGIN:VCALENDAR\\n" +
+    "VERSION:2.0\\n" +
+    "PRODID:-//Echo Flow//EN\\n" +
+    "METHOD:REQUEST\\n" +
+    "BEGIN:VEVENT\\n" +
+    `UID:${uid}\\n` +
+    `DTSTAMP:${toIcs(new Date())}\\n` +
+    `DTSTART:${toIcs(start)}\\n` +
+    `DTEND:${toIcs(end)}\\n` +
+    `SUMMARY:${esc(title)}\\n` +
+    `LOCATION:${esc(location)}\\n` +
+    `DESCRIPTION:${esc(description)}\\n` +
+    "END:VEVENT\\n" +
+    "END:VCALENDAR"
+  );
 }
+
+// --- Healthcheck ---
 app.get("/", (_req, res) => res.send("Echo Flow Booking API OK"));
+
+// --- Require header for tool calls (keeps OAuth/Twilio routes open) ---
 app.use((req, res, next) => {
   if (req.path.startsWith("/oauth/") || req.path.startsWith("/twilio/")) {
     return next();
@@ -74,6 +88,8 @@ app.use((req, res, next) => {
   if (req.get("x-app-secret") === secret) return next();
   return res.status(401).json({ error: "unauthorized" });
 });
+
+// --- Google OAuth routes ---
 app.get("/oauth/google/start", (_req, res) => {
   const o = getOAuth();
   const url = o.generateAuthUrl({
@@ -96,6 +112,8 @@ app.get("/oauth/google/callback", async (req, res) => {
     res.status(500).send("OAuth error. Check server logs.");
   }
 });
+
+// --- Twilio inbound webhook (STOP/HELP) ---
 app.post("/twilio/inbound", (req, res) => {
   const body = String(req.body?.Body || "").trim().toUpperCase();
   if (["STOP", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"].includes(body)) {
@@ -106,6 +124,8 @@ app.post("/twilio/inbound", (req, res) => {
   }
   return res.send("");
 });
+
+// --- Booking endpoint (used by your Vapi tool) ---
 app.post("/vapi/book", async (req, res) => {
   try {
     const {
@@ -121,6 +141,8 @@ app.post("/vapi/book", async (req, res) => {
     if (!customer_phone || !requested_start) {
       return res.status(400).json({ success: false, error: "missing_fields" });
     }
+
+    // Google Calendar client
     const o = getOAuth();
     loadTokens(o);
     if (!o.credentials || !o.credentials.access_token) {
@@ -146,7 +168,7 @@ app.post("/vapi/book", async (req, res) => {
       notes ? `Notes: ${notes}` : null,
     ]
       .filter(Boolean)
-      .join("\n");
+      .join("\\n");
 
     const { data: event } = await calendar.events.insert({
       calendarId: "echoflw@gmail.com",
@@ -159,6 +181,7 @@ app.post("/vapi/book", async (req, res) => {
         location: "(online demo)",
       },
     });
+
     const whenText = new Date(startISO).toLocaleString("en-US", {
       timeZone: "America/New_York",
       weekday: "short",
@@ -167,20 +190,25 @@ app.post("/vapi/book", async (req, res) => {
       hour: "numeric",
       minute: "2-digit",
     });
+
+    // SMS: customer
     if (twilioClient && process.env.TWILIO_FROM_NUMBER) {
       await twilioClient.messages.create({
         to: e164(customer_phone),
         from: process.env.TWILIO_FROM_NUMBER,
-        body: `✅ Echo Flow: You’re booked for ${whenText}\nService: ${service}\nReply STOP to opt out.`,
+        body: `✅ Echo Flow: You’re booked for ${whenText}\\nService: ${service}\\nReply STOP to opt out.`,
       });
     }
+    // SMS: owner
     if (twilioClient && process.env.OWNER_SMS && process.env.TWILIO_FROM_NUMBER) {
       await twilioClient.messages.create({
         to: process.env.OWNER_SMS,
         from: process.env.TWILIO_FROM_NUMBER,
-        body: `📩 New booking\nWhen: ${whenText} (ET)\nService: ${service}\nName: ${customer_name || "Guest"}\nPhone: ${e164(customer_phone)}${customer_email ? `\nEmail: ${customer_email}` : ""}`,
+        body: `📩 New booking\\nWhen: ${whenText} (ET)\\nService: ${service}\\nName: ${customer_name || "Guest"}\\nPhone: ${e164(customer_phone)}${customer_email ? `\\nEmail: ${customer_email}` : ""}`,
       });
     }
+
+    // Email: customer (optional)
     if (process.env.SENDGRID_API_KEY && customer_email) {
       const ics = buildICS({
         uid: event.id,
@@ -190,6 +218,7 @@ app.post("/vapi/book", async (req, res) => {
         location: "(online demo)",
         description: `Appointment for ${customer_name || "Guest"} (${service}).`,
       });
+
       await sgMail.send({
         to: customer_email,
         from: {
@@ -198,7 +227,7 @@ app.post("/vapi/book", async (req, res) => {
         },
         replyTo: process.env.CONFIRM_REPLY_TO || "laith@echoflw.com",
         subject: "✅ You’re booked at Echo Flow",
-        text: `When: ${whenText} (ET)\nService: ${service}`,
+        text: `When: ${whenText} (ET)\\nService: ${service}`,
         html: `<p><b>You’re booked.</b></p><p>When: ${whenText} (ET)<br/>Service: ${service}</p>`,
         attachments: [
           {
@@ -210,6 +239,7 @@ app.post("/vapi/book", async (req, res) => {
         ],
       });
     }
+
     return res.json({
       success: true,
       event_id: event.id,
@@ -222,4 +252,5 @@ app.post("/vapi/book", async (req, res) => {
     return res.status(500).json({ success: false, error: "internal_error" });
   }
 });
+
 app.listen(PORT, () => console.log(`API up on :${PORT}`));
