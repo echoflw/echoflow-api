@@ -21,9 +21,8 @@ const twilioClient =
   process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
     ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
     : null;
-
-// --- Google OAuth / Calendar ---
-const TOKENS_PATH = "/data/tokens.google.json"; // writable on Render
+const path = require("path");      
+const TOKENS_PATH = path.join("/tmp", "echoflow-google-tokens.json");
 
 function getOAuth() {
   return new google.auth.OAuth2(
