@@ -163,3 +163,28 @@ app.post("/vapi/book", async (req, res) => {
         return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
       };
       const ics =
+       await sgMail.send({
+         to: customer_email,
+         from: { email: process.env.CONFIRM_FROM_EMAIL || "laith@echoflw.com", name: process.env.CONFIRM_FROM_NAME || "Echo Flow" },
+         replyTo: process.env.CONFIRM_REPLY_TO || "laith@echoflw.com",
+         subject: "✅ You’re booked at Echo Flow",
+         text: `When: ${whenText} (ET)\nService: ${service}`,
+         html: `<p><b>You’re booked.</b></p><p>When: ${whenText} (ET)<br/>Service: ${service}</p>`,
+         attachments: [{
+           content: Buffer.from(ics, "utf8").toString("base64"),
+           filename: "appointment.ics",
+           type: "text/calendar",
+           disposition: "attachment"
+         }]
+       });
+     }
+
+     return res.json({ success: true, event_id: event.id, start_time: startISO, end_time: endISO, timezone: "America/New_York" });
+   } catch (e) {
+     console.error(e);
+     return res.status(500).json({ success: false, error: "internal_error" });
+   }
+ });
+
+ app.listen(PORT, () => console.log(`API up on :${PORT}`));
+ ```
